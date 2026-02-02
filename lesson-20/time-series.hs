@@ -63,7 +63,7 @@ ts3 = fileToTS file3
 ts4 :: TS Double
 ts4 = fileToTS file4
 
--- Cobmining
+-- Combining
 combineTSver1 :: TS a -> TS a -> TS a
 combineTSver1 x (TS [] []) = x
 combineTSver1 (TS [] []) x = x
@@ -155,11 +155,153 @@ maxTS = compareTS max
 minOfAll = minTS tsAll
 maxOfAll = maxTS tsAll
 
+-- Diffing
+
+diffPair :: Num a => Maybe a -> Maybe a -> Maybe a
+diffPair _ Nothing = Nothing
+diffPair Nothing _ = Nothing
+diffPair (Just x) (Just y) = Just (x - y)
 
 
+diffTS :: Num a => TS a -> TS a
+diffTS (TS [] []) = TS [] []
+diffTS (TS times values) = TS times (Nothing:diffValues) where
+  diffValues = zipWith diffPair (tail values) values
+
+meanChange = meanTS (diffTS tsAll)
+
+-- Smoothing
+
+meanMaybe :: (Real a) => [Maybe a] -> Maybe Double
+meanMaybe vals = if any (== Nothing) vals
+                 then Nothing
+                 else (Just avg)
+  where avg = mean (map fromJust vals) 
+
+movingAvg :: (Real a) => [Maybe a] -> Int -> [Maybe Double]
+movingAvg [] _ = []
+movingAvg vals n = if length slice == n
+                   then meanMaybe slice : (movingAvg (tail vals) n)
+                   else []
+  where
+  slice = take n vals 
+
+ex = movingAvg [Just 1, Just 2, Just 3, Just 4, Just 3, Just 2] 3
+
+-- Pad first
+-- Then compute averages on padded data
+-- This causes:
+-- Early and late windows to include Nothing
+-- meanMaybe returns Nothing
+-- Valid averages get dropped entirely, not just shifted
+-- ➡️ The output is shorter and more sparse than necessary
+-- so, this version is worse
+movingAverageTSVer0 :: (Real a) => TS a -> Int -> TS Double
+movingAverageTSVer0 (TS [] []) _ = TS [] []
+movingAverageTSVer0 (TS times values) n = TS times smoothedValues
+  where smoothedValues = movingAvg centered n
+        centered = mconcat [nothings, values, nothings] 
+        nothings = replicate (n `div` 2) Nothing
+        
+-- Compute all valid averages
+-- Then shift them into the correct time slots
+-- This preserves:
+-- all valid averages
+-- correct alignment
+-- original time axis length
+-- this is the correct approach
+movingAverageTS :: (Real a) => TS a -> Int -> TS Double
+movingAverageTS (TS [] []) _ = TS [] []
+movingAverageTS (TS times values) n = TS times smoothedValues
+  where ma = movingAvg values n
+        smoothedValues = mconcat [nothings, ma, nothings] 
+        nothings = replicate (n `div` 2) Nothing
+
+exTS = (TS [1, 2, 3, 4] [Just 1, Nothing, Just 3, Just 4])
+n = 3
+worse = movingAverageTSVer0 exTS n
+better = movingAverageTS exTS n
+
+{- In this case worse == better.
+ The real difference appears as soon as you slightly relax the rules.
+
+Your meanMaybe is very strict:
+
+any Nothing ⇒ Nothing
+
+That’s pedagogical, not realistic.
+
+ A realistic moving average (this is the real example you asked for)
+
+In real time-series work, we usually say:
+
+Compute the average of the values that exist.
+
+Let’s change only this:
+
+meanMaybeLoose :: Real a => [Maybe a] -> Maybe Double
+meanMaybeLoose xs =
+  case catMaybes xs of
+    [] -> Nothing
+    ys -> Just (mean ys)
 
 
+Now redefine:
 
+movingAvgLoose :: Real a => [Maybe a] -> Int -> [Maybe Double]
+movingAvgLoose vals n =
+  if length slice == n
+  then meanMaybeLoose slice : movingAvgLoose (tail vals) n
+  else []
+  where slice = take n vals
+
+Now the diff becomes visible:
+
+exTS = TS [1,2,3,4,5] [Just 1, Nothing, Just 3, Just 4, Just 5]
+n = 3
+-}
+
+
+-- Homework 1: create a function that calculates the div rather than the diff of data,
+-- capturing the percent change
+
+
+divPair :: Real a => Maybe a -> Maybe a -> Maybe Double 
+divPair _ Nothing = Nothing
+divPair Nothing _ = Nothing
+divPair (Just x) (Just y) = Just (realToFrac x / realToFrac y)
+
+
+divTS :: Real a => TS a -> TS Double
+divTS (TS [] []) = TS [] []
+divTS (TS times values) = TS times (Nothing:divValues) where
+  divValues = zipWith divPair (tail values) values
+
+percentChange = divTS tsAll
+
+-- Homework 2: standard deviation
+
+sqrMaybe :: Num a => Maybe a -> Maybe a 
+sqrMaybe Nothing = Nothing 
+sqrMaybe (Just x) = Just (x ^ 2)
+
+diffMean :: Real a => Maybe a -> Maybe Double -> Maybe Double
+diffMean Nothing _ = Nothing
+diffMean _ Nothing = Nothing
+diffMean (Just x) (Just m) = Just (realToFrac x - m)
+
+sumMaybe :: Num a => [Maybe a] -> a
+sumMaybe xs = sum (map (\(Just x) -> x) (filter isJust xs))
+
+standardDeviation :: Real a => TS a -> Maybe Double
+standardDeviation (TS _ []) = Nothing 
+standardDeviation (TS times values) = Just (sqrt variance)
+  where mean = meanTS (TS times values)
+        variance = sumDiff / n 
+        sumDiff = realToFrac (sumMaybe (map (\x -> sqrMaybe(diffMean x mean)) values))
+        n = realToFrac (length (filter isJust values))
+
+sd = standardDeviation tsAll
 
 
 
